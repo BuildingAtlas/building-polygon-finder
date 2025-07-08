@@ -1,0 +1,252 @@
+import React, { useEffect, useRef, useState } from 'react';
+import mapboxgl from 'mapbox-gl';
+import MapboxDraw from '@mapbox/mapbox-gl-draw';
+import 'mapbox-gl/dist/mapbox-gl.css';
+import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Card } from './ui/card';
+import { MapPin, Trash2, Copy, Search } from 'lucide-react';
+import { toast } from 'sonner';
+
+interface MapProps {
+  mapboxToken: string;
+}
+
+const Map: React.FC<MapProps> = ({ mapboxToken }) => {
+  const mapContainer = useRef<HTMLDivElement>(null);
+  const map = useRef<mapboxgl.Map | null>(null);
+  const draw = useRef<MapboxDraw | null>(null);
+  
+  const [coordinates, setCoordinates] = useState<number[][]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+
+  useEffect(() => {
+    if (!mapContainer.current || map.current) return;
+
+    mapboxgl.accessToken = mapboxToken;
+    
+    map.current = new mapboxgl.Map({
+      container: mapContainer.current,
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [-2.5, 53.4], // UK center
+      zoom: 6,
+    });
+
+    // Initialize draw control
+    draw.current = new MapboxDraw({
+      displayControlsDefault: false,
+      controls: {
+        polygon: true,
+        trash: true,
+      },
+      defaultMode: 'draw_polygon',
+    });
+
+    map.current.addControl(draw.current, 'top-left');
+
+    // Add navigation controls
+    map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+    // Listen for draw events
+    map.current.on('draw.create', handleDrawCreate);
+    map.current.on('draw.update', handleDrawUpdate);
+    map.current.on('draw.delete', handleDrawDelete);
+
+    return () => {
+      map.current?.remove();
+    };
+  }, [mapboxToken]);
+
+  const handleDrawCreate = (e: any) => {
+    const coords = e.features[0].geometry.coordinates[0];
+    setCoordinates(coords);
+    toast.success('Polygon created successfully!');
+  };
+
+  const handleDrawUpdate = (e: any) => {
+    const coords = e.features[0].geometry.coordinates[0];
+    setCoordinates(coords);
+    toast.success('Polygon updated!');
+  };
+
+  const handleDrawDelete = () => {
+    setCoordinates([]);
+    toast.success('Polygon deleted!');
+  };
+
+  const clearPolygons = () => {
+    if (draw.current) {
+      draw.current.deleteAll();
+      setCoordinates([]);
+      toast.success('All polygons cleared!');
+    }
+  };
+
+  const copyCoordinates = () => {
+    if (coordinates.length > 0) {
+      const coordString = JSON.stringify(coordinates, null, 2);
+      navigator.clipboard.writeText(coordString);
+      toast.success('Coordinates copied to clipboard!');
+    }
+  };
+
+  const searchLocation = async () => {
+    if (!searchQuery.trim()) return;
+    
+    setIsSearching(true);
+    try {
+      const response = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+          searchQuery
+        )}.json?access_token=${mapboxToken}&country=GB&limit=1`
+      );
+      
+      const data = await response.json();
+      
+      if (data.features && data.features.length > 0) {
+        const [lng, lat] = data.features[0].center;
+        
+        if (map.current) {
+          map.current.flyTo({
+            center: [lng, lat],
+            zoom: 16,
+            duration: 2000,
+          });
+          
+          // Add a marker for the search result
+          new mapboxgl.Marker()
+            .setLngLat([lng, lat])
+            .addTo(map.current);
+          
+          toast.success(`Found: ${data.features[0].place_name}`);
+        }
+      } else {
+        toast.error('Location not found');
+      }
+    } catch (error) {
+      toast.error('Error searching for location');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleSearchKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      searchLocation();
+    }
+  };
+
+  return (
+    <div className="h-screen flex">
+      {/* Sidebar */}
+      <div className="w-80 bg-card border-r border-map-border p-4 overflow-y-auto">
+        <div className="space-y-6">
+          {/* Search Section */}
+          <Card className="p-4">
+            <h3 className="font-semibold mb-3 flex items-center gap-2">
+              <Search className="h-4 w-4" />
+              Search Location
+            </h3>
+            <div className="flex gap-2">
+              <Input
+                placeholder="Enter address, postcode, or UPRN"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyPress={handleSearchKeyPress}
+              />
+              <Button
+                onClick={searchLocation}
+                disabled={isSearching || !searchQuery.trim()}
+                size="sm"
+              >
+                <Search className="h-4 w-4" />
+              </Button>
+            </div>
+          </Card>
+
+          {/* Drawing Instructions */}
+          <Card className="p-4">
+            <h3 className="font-semibold mb-3 flex items-center gap-2">
+              <MapPin className="h-4 w-4" />
+              Drawing Tools
+            </h3>
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>• Click the polygon tool in the map to start drawing</p>
+              <p>• Click points to create your polygon shape</p>
+              <p>• Double-click or press Enter to finish</p>
+              <p>• Use the trash tool to delete polygons</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearPolygons}
+              className="mt-3 w-full"
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Clear All Polygons
+            </Button>
+          </Card>
+
+          {/* Coordinates Display */}
+          <Card className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold">Polygon Coordinates</h3>
+              {coordinates.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={copyCoordinates}
+                >
+                  <Copy className="h-4 w-4 mr-1" />
+                  Copy
+                </Button>
+              )}
+            </div>
+            {coordinates.length > 0 ? (
+              <div className="bg-muted p-3 rounded-md max-h-96 overflow-y-auto">
+                <pre className="text-xs font-mono">
+                  {JSON.stringify(coordinates, null, 2)}
+                </pre>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Draw a polygon on the map to see coordinates
+              </p>
+            )}
+          </Card>
+
+          {/* Coordinate Info */}
+          {coordinates.length > 0 && (
+            <Card className="p-4">
+              <h3 className="font-semibold mb-2">Polygon Info</h3>
+              <div className="text-sm space-y-1">
+                <p><span className="font-medium">Points:</span> {coordinates.length}</p>
+                <p><span className="font-medium">Format:</span> [longitude, latitude]</p>
+                <p className="text-muted-foreground">
+                  Coordinates are in WGS84 decimal degrees
+                </p>
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* Map Container */}
+      <div className="flex-1 relative">
+        <div ref={mapContainer} className="absolute inset-0" />
+        
+        {/* Map overlay info */}
+        <div className="absolute top-4 left-4 bg-map-controls/90 backdrop-blur-sm rounded-lg p-3 shadow-lg border border-map-border">
+          <h1 className="font-semibold text-sm">Building Polygon Tool</h1>
+          <p className="text-xs text-muted-foreground mt-1">
+            Draw polygons to capture building outlines
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Map;
