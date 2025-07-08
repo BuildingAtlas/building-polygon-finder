@@ -6,7 +6,7 @@ import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card } from './ui/card';
-import { MapPin, Trash2, Copy, Search } from 'lucide-react';
+import { MapPin, Trash2, Copy, Search, ToggleLeft, ToggleRight } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface MapProps {
@@ -19,8 +19,10 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
   const draw = useRef<MapboxDraw | null>(null);
   
   const [coordinates, setCoordinates] = useState<number[][]>([]);
+  const [polygonWKT, setPolygonWKT] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [showRawCoords, setShowRawCoords] = useState(false);
 
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
@@ -59,6 +61,35 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
     };
   }, [mapboxToken]);
 
+  // Convert coordinates to WKT POLYGON format
+  const coordinatesToWKT = (coords: number[][]): string => {
+    if (coords.length === 0) return '';
+    
+    // Ensure the polygon is closed (first and last points are the same)
+    const closedCoords = [...coords];
+    if (closedCoords.length > 0 && 
+        (closedCoords[0][0] !== closedCoords[closedCoords.length - 1][0] || 
+         closedCoords[0][1] !== closedCoords[closedCoords.length - 1][1])) {
+      closedCoords.push(closedCoords[0]);
+    }
+    
+    // Format as WKT: POLYGON ((lng lat, lng lat, ...))
+    const coordString = closedCoords
+      .map(coord => `${coord[0]} ${coord[1]}`)
+      .join(', ');
+    
+    return `POLYGON ((${coordString}))`;
+  };
+
+  // Update WKT when coordinates change
+  useEffect(() => {
+    if (coordinates.length > 0) {
+      setPolygonWKT(coordinatesToWKT(coordinates));
+    } else {
+      setPolygonWKT('');
+    }
+  }, [coordinates]);
+
   const handleDrawCreate = (e: any) => {
     const coords = e.features[0].geometry.coordinates[0];
     setCoordinates(coords);
@@ -73,6 +104,7 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
 
   const handleDrawDelete = () => {
     setCoordinates([]);
+    setPolygonWKT('');
     toast.success('Polygon deleted!');
   };
 
@@ -80,15 +112,19 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
     if (draw.current) {
       draw.current.deleteAll();
       setCoordinates([]);
+      setPolygonWKT('');
       toast.success('All polygons cleared!');
     }
   };
 
   const copyCoordinates = () => {
-    if (coordinates.length > 0) {
+    if (polygonWKT) {
+      navigator.clipboard.writeText(polygonWKT);
+      toast.success('WKT coordinates copied to clipboard!');
+    } else if (coordinates.length > 0) {
       const coordString = JSON.stringify(coordinates, null, 2);
       navigator.clipboard.writeText(coordString);
-      toast.success('Coordinates copied to clipboard!');
+      toast.success('Raw coordinates copied to clipboard!');
     }
   };
 
@@ -193,21 +229,37 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
           <Card className="p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold">Polygon Coordinates</h3>
-              {coordinates.length > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={copyCoordinates}
-                >
-                  <Copy className="h-4 w-4 mr-1" />
-                  Copy
-                </Button>
-              )}
+              <div className="flex items-center gap-2">
+                {coordinates.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowRawCoords(!showRawCoords)}
+                  >
+                    {showRawCoords ? (
+                      <ToggleRight className="h-4 w-4 mr-1" />
+                    ) : (
+                      <ToggleLeft className="h-4 w-4 mr-1" />
+                    )}
+                    {showRawCoords ? 'WKT' : 'Raw'}
+                  </Button>
+                )}
+                {coordinates.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={copyCoordinates}
+                  >
+                    <Copy className="h-4 w-4 mr-1" />
+                    Copy
+                  </Button>
+                )}
+              </div>
             </div>
             {coordinates.length > 0 ? (
               <div className="bg-muted p-3 rounded-md max-h-96 overflow-y-auto">
-                <pre className="text-xs font-mono">
-                  {JSON.stringify(coordinates, null, 2)}
+                <pre className="text-xs font-mono whitespace-pre-wrap break-all">
+                  {showRawCoords ? JSON.stringify(coordinates, null, 2) : polygonWKT}
                 </pre>
               </div>
             ) : (
@@ -223,10 +275,15 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
               <h3 className="font-semibold mb-2">Polygon Info</h3>
               <div className="text-sm space-y-1">
                 <p><span className="font-medium">Points:</span> {coordinates.length}</p>
-                <p><span className="font-medium">Format:</span> [longitude, latitude]</p>
+                <p><span className="font-medium">Format:</span> {showRawCoords ? '[longitude, latitude]' : 'WKT POLYGON'}</p>
                 <p className="text-muted-foreground">
                   Coordinates are in WGS84 decimal degrees
                 </p>
+                {!showRawCoords && (
+                  <p className="text-muted-foreground text-xs mt-2">
+                    WKT format: longitude latitude pairs, comma-separated
+                  </p>
+                )}
               </div>
             </Card>
           )}
