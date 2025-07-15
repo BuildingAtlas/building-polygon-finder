@@ -1,8 +1,12 @@
-# Welcome to your Lovable project
+# Building Polygon Finder
 
 ## Project info
 
 **URL**: https://lovable.dev/projects/7899a54c-6b83-41b4-afae-5a407b3f69b1
+
+This is a simple app to generate building polygons - search for the building, or draw a polygon. 
+It needs a Mapbox key to get started. No data persists. 
+
 
 ## How can I edit this code?
 
