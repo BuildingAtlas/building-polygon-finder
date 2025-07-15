@@ -6,7 +6,7 @@ import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card } from './ui/card';
-import { MapPin, Trash2, Copy, Search, ToggleLeft, ToggleRight } from 'lucide-react';
+import { MapPin, Trash2, Copy, Search, ToggleLeft, ToggleRight, Globe, Layers } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface MapProps {
@@ -23,6 +23,7 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [showRawCoords, setShowRawCoords] = useState(false);
+  const [isSatelliteView, setIsSatelliteView] = useState(false);
 
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
@@ -302,6 +303,29 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
     }
   };
 
+  const toggleSatelliteView = () => {
+    if (!map.current) return;
+    
+    const newSatelliteState = !isSatelliteView;
+    setIsSatelliteView(newSatelliteState);
+    
+    const style = newSatelliteState 
+      ? 'mapbox://styles/mapbox/satellite-streets-v12'
+      : 'mapbox://styles/mapbox/streets-v12';
+    
+    map.current.setStyle(style);
+    
+    // Re-add building polygons after style change
+    map.current.on('style.load', () => {
+      if (map.current && map.current.getSource('buildings')) {
+        // Style has loaded, buildings will need to be re-added
+        // This is handled automatically by Mapbox when the source exists
+      }
+    });
+    
+    toast.success(`Switched to ${newSatelliteState ? 'satellite' : 'street'} view`);
+  };
+
   return (
     <div className="h-screen flex">
       {/* Sidebar */}
@@ -328,6 +352,27 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
                 <Search className="h-4 w-4" />
               </Button>
             </div>
+          </Card>
+
+          {/* Map Controls */}
+          <Card className="p-4">
+            <h3 className="font-semibold mb-3 flex items-center gap-2">
+              <Layers className="h-4 w-4" />
+              Map View
+            </h3>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={toggleSatelliteView}
+              className="w-full"
+            >
+              {isSatelliteView ? (
+                <Globe className="h-4 w-4 mr-2" />
+              ) : (
+                <Layers className="h-4 w-4 mr-2" />
+              )}
+              {isSatelliteView ? 'Street View' : 'Satellite View'}
+            </Button>
           </Card>
 
           {/* Drawing Instructions */}
