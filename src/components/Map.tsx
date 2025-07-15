@@ -128,6 +128,130 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
     }
   };
 
+  const fetchBuildingsFromOSM = async (lat: number, lng: number, radius: number = 100) => {
+    try {
+      const overpassQuery = `
+        [out:json][timeout:25];
+        (
+          way["building"](around:${radius},${lat},${lng});
+          relation["building"](around:${radius},${lat},${lng});
+        );
+        out geom;
+      `;
+      
+      const response = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        body: overpassQuery,
+      });
+      
+      const data = await response.json();
+      return data.elements || [];
+    } catch (error) {
+      console.error('Error fetching OSM building data:', error);
+      return [];
+    }
+  };
+
+  const addBuildingPolygons = (buildings: any[]) => {
+    if (!map.current) return;
+
+    // Remove existing building polygons
+    if (map.current.getLayer('buildings')) {
+      map.current.removeLayer('buildings');
+    }
+    if (map.current.getSource('buildings')) {
+      map.current.removeSource('buildings');
+    }
+
+    const features = buildings
+      .filter(building => building.type === 'way' && building.geometry)
+      .map(building => ({
+        type: 'Feature' as const,
+        properties: {
+          id: building.id,
+          building: building.tags?.building || 'yes',
+        },
+        geometry: {
+          type: 'Polygon' as const,
+          coordinates: [building.geometry.map((node: any) => [node.lon, node.lat]).concat([
+            [building.geometry[0].lon, building.geometry[0].lat] // Close the polygon
+          ])],
+        },
+      }));
+
+    if (features.length > 0) {
+      map.current.addSource('buildings', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features,
+        },
+      });
+
+      map.current.addLayer({
+        id: 'buildings',
+        type: 'fill',
+        source: 'buildings',
+        paint: {
+          'fill-color': '#ff6b6b',
+          'fill-opacity': 0.3,
+        },
+      });
+
+      map.current.addLayer({
+        id: 'buildings-outline',
+        type: 'line',
+        source: 'buildings',
+        paint: {
+          'line-color': '#ff6b6b',
+          'line-width': 2,
+        },
+      });
+
+      // Add click event to select building polygons
+      map.current.on('click', 'buildings', (e) => {
+        if (e.features && e.features[0] && draw.current) {
+          const feature = e.features[0];
+          if (feature.geometry.type === 'Polygon') {
+            // Clear existing polygons
+            draw.current.deleteAll();
+            
+            // Add the clicked building as a drawn polygon
+            const coords = feature.geometry.coordinates[0] as number[][];
+            setCoordinates(coords);
+            setPolygonWKT(coordinatesToWKT(coords));
+            
+            // Add to drawing layer
+            draw.current.add({
+              type: 'Feature',
+              properties: {},
+              geometry: feature.geometry,
+            });
+            
+            toast.success('Building polygon selected!');
+          }
+        }
+      });
+
+      // Change cursor on hover
+      map.current.on('mouseenter', 'buildings', () => {
+        if (map.current) {
+          map.current.getCanvas().style.cursor = 'pointer';
+        }
+      });
+
+      map.current.on('mouseleave', 'buildings', () => {
+        if (map.current) {
+          map.current.getCanvas().style.cursor = '';
+        }
+      });
+
+      toast.success(`Found ${features.length} building(s) nearby`);
+    } else {
+      toast.info('No buildings found in this area');
+    }
+  };
+
   const searchLocation = async () => {
     if (!searchQuery.trim()) return;
     
@@ -147,7 +271,7 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
         if (map.current) {
           map.current.flyTo({
             center: [lng, lat],
-            zoom: 16,
+            zoom: 18,
             duration: 2000,
           });
           
@@ -157,6 +281,10 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
             .addTo(map.current);
           
           toast.success(`Found: ${data.features[0].place_name}`);
+          
+          // Fetch and display nearby buildings from OSM
+          const buildings = await fetchBuildingsFromOSM(lat, lng, 100);
+          addBuildingPolygons(buildings);
         }
       } else {
         toast.error('Location not found');
