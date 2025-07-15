@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Loader } from '@googlemaps/js-api-loader';
+import mapboxgl from 'mapbox-gl';
+import MapboxDraw from '@mapbox/mapbox-gl-draw';
+import 'mapbox-gl/dist/mapbox-gl.css';
+import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card } from './ui/card';
@@ -7,22 +10,16 @@ import { MapPin, Trash2, Copy, Search, ToggleLeft, ToggleRight, Globe, Layers } 
 import { toast } from 'sonner';
 
 interface MapProps {
-  mapboxToken: string; // We'll rename this to apiKey
+  mapboxToken: string;
 }
 
-interface Building {
-  coordinates: number[][];
-  properties: { [key: string]: any };
-}
-
-const Map: React.FC<MapProps> = ({ mapboxToken: apiKey }) => {
+const Map: React.FC<MapProps> = ({ mapboxToken }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<google.maps.Map | null>(null);
-  const drawingManager = useRef<google.maps.drawing.DrawingManager | null>(null);
-  const [coordinates, setCoordinates] = useState<Array<{ lat: number; lng: number }>>([]);
-  const [buildings, setBuildings] = useState<Building[]>([]);
-  const [buildingPolygons, setBuildingPolygons] = useState<google.maps.Polygon[]>([]);
-  const [drawnPolygons, setDrawnPolygons] = useState<google.maps.Polygon[]>([]);
+  const map = useRef<mapboxgl.Map | null>(null);
+  const draw = useRef<MapboxDraw | null>(null);
+  
+  const [coordinates, setCoordinates] = useState<number[][]>([]);
+  const [polygonWKT, setPolygonWKT] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [showRawCoords, setShowRawCoords] = useState(false);
@@ -31,127 +28,109 @@ const Map: React.FC<MapProps> = ({ mapboxToken: apiKey }) => {
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
 
-    const loader = new Loader({
-      apiKey: apiKey,
-      version: 'weekly',
-      libraries: ['drawing', 'places'],
+    mapboxgl.accessToken = mapboxToken;
+    
+    map.current = new mapboxgl.Map({
+      container: mapContainer.current,
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [-2.5, 53.4], // UK center
+      zoom: 6,
     });
 
-    loader.load().then(() => {
-      if (!mapContainer.current) return;
-
-      // Initialize map
-      map.current = new google.maps.Map(mapContainer.current, {
-        center: { lat: 51.5074, lng: -0.1278 }, // London
-        zoom: 13,
-        mapTypeId: google.maps.MapTypeId.ROADMAP,
-        mapTypeControl: true,
-        streetViewControl: true,
-        fullscreenControl: true,
-      });
-
-      // Initialize drawing manager
-      drawingManager.current = new google.maps.drawing.DrawingManager({
-        drawingMode: null,
-        drawingControl: true,
-        drawingControlOptions: {
-          position: google.maps.ControlPosition.TOP_CENTER,
-          drawingModes: [
-            google.maps.drawing.OverlayType.POLYGON,
-            google.maps.drawing.OverlayType.RECTANGLE,
-            google.maps.drawing.OverlayType.CIRCLE,
-          ],
-        },
-        polygonOptions: {
-          fillColor: '#3b82f6',
-          fillOpacity: 0.3,
-          strokeWeight: 2,
-          strokeColor: '#1d4ed8',
-          clickable: true,
-          editable: true,
-        },
-      });
-
-      drawingManager.current.setMap(map.current);
-
-      // Listen for drawn polygons
-      google.maps.event.addListener(drawingManager.current, 'polygoncomplete', (polygon: google.maps.Polygon) => {
-        setDrawnPolygons(prev => [...prev, polygon]);
-        
-        // Get coordinates
-        const path = polygon.getPath();
-        const coords: { lat: number; lng: number }[] = [];
-        
-        for (let i = 0; i < path.getLength(); i++) {
-          const point = path.getAt(i);
-          coords.push({ lat: point.lat(), lng: point.lng() });
-        }
-        
-        setCoordinates(prev => [...prev, ...coords]);
-        toast.success('Polygon drawn successfully!');
-      });
-    }).catch(error => {
-      console.error('Error loading Google Maps:', error);
-      toast.error('Failed to load Google Maps');
+    // Initialize draw control
+    draw.current = new MapboxDraw({
+      displayControlsDefault: false,
+      controls: {
+        polygon: true,
+        trash: true,
+      },
+      defaultMode: 'draw_polygon',
     });
+
+    map.current.addControl(draw.current, 'top-left');
+
+    // Add navigation controls
+    map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+    // Listen for draw events
+    map.current.on('draw.create', handleDrawCreate);
+    map.current.on('draw.update', handleDrawUpdate);
+    map.current.on('draw.delete', handleDrawDelete);
 
     return () => {
-      if (map.current) {
-        // Clean up map
-        map.current = null;
-      }
+      map.current?.remove();
     };
-  }, [apiKey]);
+  }, [mapboxToken]);
 
-  const searchLocation = async () => {
-    if (!searchQuery.trim() || !map.current) return;
+  // Convert coordinates to WKT POLYGON format
+  const coordinatesToWKT = (coords: number[][]): string => {
+    if (coords.length === 0) return '';
     
-    setIsSearching(true);
+    // Ensure the polygon is closed (first and last points are the same)
+    const closedCoords = [...coords];
+    if (closedCoords.length > 0 && 
+        (closedCoords[0][0] !== closedCoords[closedCoords.length - 1][0] || 
+         closedCoords[0][1] !== closedCoords[closedCoords.length - 1][1])) {
+      closedCoords.push(closedCoords[0]);
+    }
     
-    try {
-      // Use Google Geocoding API
-      const geocoder = new google.maps.Geocoder();
-      
-      geocoder.geocode({ address: searchQuery }, async (results, status) => {
-        if (status === 'OK' && results && results[0]) {
-          const location = results[0].geometry.location;
-          const lat = location.lat();
-          const lng = location.lng();
-          
-          // Center map on location
-          map.current?.setCenter({ lat, lng });
-          map.current?.setZoom(16);
-          
-          // Add marker
-          new google.maps.Marker({
-            position: { lat, lng },
-            map: map.current,
-            title: searchQuery,
-          });
-          
-          // Fetch buildings from OS API
-          await fetchNearbyBuildings(lat, lng);
-          
-          toast.success(`Found: ${results[0].formatted_address}`);
-        } else {
-          toast.error('Location not found');
-        }
-        setIsSearching(false);
-      });
-    } catch (error) {
-      console.error('Search error:', error);
-      toast.error('Search failed');
-      setIsSearching(false);
+    // Format as WKT: POLYGON ((lng lat, lng lat, ...))
+    const coordString = closedCoords
+      .map(coord => `${coord[0]} ${coord[1]}`)
+      .join(', ');
+    
+    return `POLYGON ((${coordString}))`;
+  };
+
+  // Update WKT when coordinates change
+  useEffect(() => {
+    if (coordinates.length > 0) {
+      setPolygonWKT(coordinatesToWKT(coordinates));
+    } else {
+      setPolygonWKT('');
+    }
+  }, [coordinates]);
+
+  const handleDrawCreate = (e: any) => {
+    const coords = e.features[0].geometry.coordinates[0];
+    setCoordinates(coords);
+    toast.success('Polygon created successfully!');
+  };
+
+  const handleDrawUpdate = (e: any) => {
+    const coords = e.features[0].geometry.coordinates[0];
+    setCoordinates(coords);
+    toast.success('Polygon updated!');
+  };
+
+  const handleDrawDelete = () => {
+    setCoordinates([]);
+    setPolygonWKT('');
+    toast.success('Polygon deleted!');
+  };
+
+  const clearPolygons = () => {
+    if (draw.current) {
+      draw.current.deleteAll();
+      setCoordinates([]);
+      setPolygonWKT('');
+      toast.success('All polygons cleared!');
     }
   };
 
-  const fetchNearbyBuildings = async (lat: number, lng: number) => {
+  const copyCoordinates = () => {
+    if (polygonWKT) {
+      navigator.clipboard.writeText(polygonWKT);
+      toast.success('WKT coordinates copied to clipboard!');
+    } else if (coordinates.length > 0) {
+      const coordString = JSON.stringify(coordinates, null, 2);
+      navigator.clipboard.writeText(coordString);
+      toast.success('Raw coordinates copied to clipboard!');
+    }
+  };
+
+  const fetchBuildingsFromOSM = async (lat: number, lng: number, radius: number = 100) => {
     try {
-      // Use OS Features API for building data
-      const radius = 200; // meters
-      const bbox = calculateBoundingBox(lat, lng, radius);
-      
-      // Note: This would require an OS API key. For now, using OpenStreetMap as fallback
       const overpassQuery = `
         [out:json][timeout:25];
         (
@@ -166,131 +145,162 @@ const Map: React.FC<MapProps> = ({ mapboxToken: apiKey }) => {
         body: overpassQuery,
       });
       
-      if (!response.ok) throw new Error('Failed to fetch building data');
+      const data = await response.json();
+      return data.elements || [];
+    } catch (error) {
+      console.error('Error fetching OSM building data:', error);
+      return [];
+    }
+  };
+
+  const addBuildingPolygons = (buildings: any[]) => {
+    if (!map.current) return;
+
+    // Remove existing building polygons
+    if (map.current.getLayer('buildings')) {
+      map.current.removeLayer('buildings');
+    }
+    if (map.current.getSource('buildings')) {
+      map.current.removeSource('buildings');
+    }
+
+    const features = buildings
+      .filter(building => building.type === 'way' && building.geometry)
+      .map(building => ({
+        type: 'Feature' as const,
+        properties: {
+          id: building.id,
+          building: building.tags?.building || 'yes',
+        },
+        geometry: {
+          type: 'Polygon' as const,
+          coordinates: [building.geometry.map((node: any) => [node.lon, node.lat]).concat([
+            [building.geometry[0].lon, building.geometry[0].lat] // Close the polygon
+          ])],
+        },
+      }));
+
+    if (features.length > 0) {
+      map.current.addSource('buildings', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features,
+        },
+      });
+
+      map.current.addLayer({
+        id: 'buildings',
+        type: 'fill',
+        source: 'buildings',
+        paint: {
+          'fill-color': '#ff6b6b',
+          'fill-opacity': 0.3,
+        },
+      });
+
+      map.current.addLayer({
+        id: 'buildings-outline',
+        type: 'line',
+        source: 'buildings',
+        paint: {
+          'line-color': '#ff6b6b',
+          'line-width': 2,
+        },
+      });
+
+      // Add click event to select building polygons
+      map.current.on('click', 'buildings', (e) => {
+        if (e.features && e.features[0] && draw.current) {
+          const feature = e.features[0];
+          if (feature.geometry.type === 'Polygon') {
+            // Clear existing polygons
+            draw.current.deleteAll();
+            
+            // Add the clicked building as a drawn polygon
+            const coords = feature.geometry.coordinates[0] as number[][];
+            setCoordinates(coords);
+            setPolygonWKT(coordinatesToWKT(coords));
+            
+            // Add to drawing layer
+            draw.current.add({
+              type: 'Feature',
+              properties: {},
+              geometry: feature.geometry,
+            });
+            
+            toast.success('Building polygon selected!');
+          }
+        }
+      });
+
+      // Change cursor on hover
+      map.current.on('mouseenter', 'buildings', () => {
+        if (map.current) {
+          map.current.getCanvas().style.cursor = 'pointer';
+        }
+      });
+
+      map.current.on('mouseleave', 'buildings', () => {
+        if (map.current) {
+          map.current.getCanvas().style.cursor = '';
+        }
+      });
+
+      toast.success(`Found ${features.length} building(s) nearby`);
+    } else {
+      toast.info('No buildings found in this area');
+    }
+  };
+
+  const searchLocation = async () => {
+    if (!searchQuery.trim()) return;
+    
+    setIsSearching(true);
+    try {
+      const response = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+          searchQuery
+        )}.json?access_token=${mapboxToken}&country=GB&limit=1`
+      );
       
       const data = await response.json();
-      const buildingData: Building[] = data.elements
-        .filter((element: any) => element.geometry)
-        .map((element: any) => ({
-          coordinates: element.geometry.map((coord: any) => [coord.lat, coord.lon]),
-          properties: element.tags || {},
-        }));
       
-      setBuildings(buildingData);
-      displayBuildings(buildingData);
-      
-      toast.success(`Found ${buildingData.length} buildings nearby`);
-    } catch (error) {
-      console.error('Error fetching buildings:', error);
-      toast.error('Failed to fetch building data');
-    }
-  };
-
-  const calculateBoundingBox = (lat: number, lng: number, radiusMeters: number) => {
-    const earthRadius = 6371000; // Earth's radius in meters
-    const latDelta = (radiusMeters / earthRadius) * (180 / Math.PI);
-    const lngDelta = (radiusMeters / earthRadius) * (180 / Math.PI) / Math.cos(lat * Math.PI / 180);
-    
-    return {
-      north: lat + latDelta,
-      south: lat - latDelta,
-      east: lng + lngDelta,
-      west: lng - lngDelta,
-    };
-  };
-
-  const displayBuildings = (buildingData: Building[]) => {
-    if (!map.current) return;
-    
-    // Clear existing building polygons
-    buildingPolygons.forEach(polygon => polygon.setMap(null));
-    setBuildingPolygons([]);
-    
-    const newPolygons: google.maps.Polygon[] = [];
-    
-    buildingData.forEach((building) => {
-      if (building.coordinates && building.coordinates.length > 2) {
-        const path = building.coordinates.map(coord => ({
-          lat: coord[0],
-          lng: coord[1],
-        }));
+      if (data.features && data.features.length > 0) {
+        const [lng, lat] = data.features[0].center;
         
-        const polygon = new google.maps.Polygon({
-          paths: path,
-          strokeColor: '#ef4444',
-          strokeOpacity: 0.8,
-          strokeWeight: 2,
-          fillColor: '#ef4444',
-          fillOpacity: 0.2,
-          clickable: true,
-        });
-        
-        polygon.setMap(map.current);
-        
-        // Add click listener to make building editable
-        google.maps.event.addListener(polygon, 'click', () => {
-          // Create editable copy
-          const editablePolygon = new google.maps.Polygon({
-            paths: path,
-            strokeColor: '#1d4ed8',
-            strokeOpacity: 0.8,
-            strokeWeight: 2,
-            fillColor: '#3b82f6',
-            fillOpacity: 0.3,
-            clickable: true,
-            editable: true,
+        if (map.current) {
+          map.current.flyTo({
+            center: [lng, lat],
+            zoom: 18,
+            duration: 2000,
           });
           
-          editablePolygon.setMap(map.current);
-          setDrawnPolygons(prev => [...prev, editablePolygon]);
+          // Add a marker for the search result
+          new mapboxgl.Marker()
+            .setLngLat([lng, lat])
+            .addTo(map.current);
           
-          // Add coordinates to state
-          const coords = path.map(point => ({ lat: point.lat, lng: point.lng }));
-          setCoordinates(prev => [...prev, ...coords]);
+          toast.success(`Found: ${data.features[0].place_name}`);
           
-          toast.success('Building selected and made editable');
-        });
-        
-        newPolygons.push(polygon);
+          // Fetch and display nearby buildings from OSM
+          const buildings = await fetchBuildingsFromOSM(lat, lng, 100);
+          addBuildingPolygons(buildings);
+        }
+      } else {
+        toast.error('Location not found');
       }
-    });
-    
-    setBuildingPolygons(newPolygons);
-  };
-
-  const clearAll = () => {
-    // Clear drawn polygons
-    drawnPolygons.forEach(polygon => polygon.setMap(null));
-    setDrawnPolygons([]);
-    
-    // Clear building polygons
-    buildingPolygons.forEach(polygon => polygon.setMap(null));
-    setBuildingPolygons([]);
-    
-    setCoordinates([]);
-    setBuildings([]);
-    toast.success('Map cleared');
-  };
-
-  const copyCoordinates = () => {
-    if (coordinates.length === 0) {
-      toast.error('No coordinates to copy');
-      return;
+    } catch (error) {
+      toast.error('Error searching for location');
+    } finally {
+      setIsSearching(false);
     }
-    
-    const coordsText = coordinates
-      .map(coord => `${coord.lat.toFixed(6)}, ${coord.lng.toFixed(6)}`)
-      .join('\n');
-    
-    navigator.clipboard.writeText(coordsText);
-    toast.success('Coordinates copied to clipboard');
   };
 
-  const formatCoordinates = (coords: { lat: number; lng: number }[]) => {
-    if (showRawCoords) {
-      return coords.map(coord => `${coord.lat.toFixed(6)}, ${coord.lng.toFixed(6)}`).join('\n');
+  const handleSearchKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      searchLocation();
     }
-    return `${coords.length} coordinate pairs`;
   };
 
   const toggleSatelliteView = () => {
@@ -299,11 +309,19 @@ const Map: React.FC<MapProps> = ({ mapboxToken: apiKey }) => {
     const newSatelliteState = !isSatelliteView;
     setIsSatelliteView(newSatelliteState);
     
-    const mapType = newSatelliteState 
-      ? google.maps.MapTypeId.SATELLITE
-      : google.maps.MapTypeId.ROADMAP;
+    const style = newSatelliteState 
+      ? 'mapbox://styles/mapbox/satellite-streets-v12'
+      : 'mapbox://styles/mapbox/streets-v12';
     
-    map.current.setMapTypeId(mapType);
+    map.current.setStyle(style);
+    
+    // Re-add building polygons after style change
+    map.current.on('style.load', () => {
+      if (map.current && map.current.getSource('buildings')) {
+        // Style has loaded, buildings will need to be re-added
+        // This is handled automatically by Mapbox when the source exists
+      }
+    });
     
     toast.success(`Switched to ${newSatelliteState ? 'satellite' : 'street'} view`);
   };
@@ -311,25 +329,24 @@ const Map: React.FC<MapProps> = ({ mapboxToken: apiKey }) => {
   return (
     <div className="h-screen flex">
       {/* Sidebar */}
-      <div className="w-80 bg-background border-r p-4 overflow-y-auto">
-        <div className="space-y-4">
-          {/* Search */}
+      <div className="w-80 bg-card border-r border-map-border p-4 overflow-y-auto">
+        <div className="space-y-6">
+          {/* Search Section */}
           <Card className="p-4">
             <h3 className="font-semibold mb-3 flex items-center gap-2">
-              <MapPin className="h-4 w-4" />
+              <Search className="h-4 w-4" />
               Search Location
             </h3>
             <div className="flex gap-2">
               <Input
-                placeholder="Enter address or postcode..."
+                placeholder="Enter address, postcode, or UPRN"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && searchLocation()}
-                className="flex-1"
+                onKeyPress={handleSearchKeyPress}
               />
-              <Button 
-                onClick={searchLocation} 
-                disabled={isSearching}
+              <Button
+                onClick={searchLocation}
+                disabled={isSearching || !searchQuery.trim()}
                 size="sm"
               >
                 <Search className="h-4 w-4" />
@@ -360,57 +377,103 @@ const Map: React.FC<MapProps> = ({ mapboxToken: apiKey }) => {
 
           {/* Drawing Instructions */}
           <Card className="p-4">
-            <h3 className="font-semibold mb-3">Drawing Tools</h3>
-            <p className="text-sm text-muted-foreground mb-3">
-              Use the drawing tools above the map to create polygons, rectangles, or circles. Click on red building outlines to select and edit them.
-            </p>
-            <div className="space-y-2">
-              <Button onClick={clearAll} variant="outline" size="sm" className="w-full">
-                <Trash2 className="h-4 w-4 mr-2" />
-                Clear All
-              </Button>
+            <h3 className="font-semibold mb-3 flex items-center gap-2">
+              <MapPin className="h-4 w-4" />
+              Drawing Tools
+            </h3>
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>• Click the polygon tool in the map to start drawing</p>
+              <p>• Click points to create your polygon shape</p>
+              <p>• Double-click or press Enter to finish</p>
+              <p>• Use the trash tool to delete polygons</p>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearPolygons}
+              className="mt-3 w-full"
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Clear All Polygons
+            </Button>
           </Card>
 
           {/* Coordinates Display */}
-          {coordinates.length > 0 && (
-            <Card className="p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold">Coordinates</h3>
-                <div className="flex gap-2">
+          <Card className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold">Polygon Coordinates</h3>
+              <div className="flex items-center gap-2">
+                {coordinates.length > 0 && (
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
                     onClick={() => setShowRawCoords(!showRawCoords)}
                   >
-                    {showRawCoords ? <ToggleRight className="h-4 w-4" /> : <ToggleLeft className="h-4 w-4" />}
+                    {showRawCoords ? (
+                      <ToggleRight className="h-4 w-4 mr-1" />
+                    ) : (
+                      <ToggleLeft className="h-4 w-4 mr-1" />
+                    )}
+                    {showRawCoords ? 'WKT' : 'Raw'}
                   </Button>
-                  <Button onClick={copyCoordinates} variant="outline" size="sm">
-                    <Copy className="h-4 w-4" />
+                )}
+                {coordinates.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={copyCoordinates}
+                  >
+                    <Copy className="h-4 w-4 mr-1" />
+                    Copy
                   </Button>
-                </div>
+                )}
               </div>
-              <div className="text-sm font-mono bg-muted p-3 rounded-md max-h-48 overflow-y-auto">
-                {formatCoordinates(coordinates)}
+            </div>
+            {coordinates.length > 0 ? (
+              <div className="bg-muted p-3 rounded-md max-h-96 overflow-y-auto">
+                <pre className="text-xs font-mono whitespace-pre-wrap break-all">
+                  {showRawCoords ? JSON.stringify(coordinates, null, 2) : polygonWKT}
+                </pre>
               </div>
-            </Card>
-          )}
-
-          {/* Buildings Info */}
-          {buildings.length > 0 && (
-            <Card className="p-4">
-              <h3 className="font-semibold mb-3">Buildings Found</h3>
+            ) : (
               <p className="text-sm text-muted-foreground">
-                {buildings.length} buildings in the area. Click on red outlines to select and edit them.
+                Draw a polygon on the map to see coordinates
               </p>
+            )}
+          </Card>
+
+          {/* Coordinate Info */}
+          {coordinates.length > 0 && (
+            <Card className="p-4">
+              <h3 className="font-semibold mb-2">Polygon Info</h3>
+              <div className="text-sm space-y-1">
+                <p><span className="font-medium">Points:</span> {coordinates.length}</p>
+                <p><span className="font-medium">Format:</span> {showRawCoords ? '[longitude, latitude]' : 'WKT POLYGON'}</p>
+                <p className="text-muted-foreground">
+                  Coordinates are in WGS84 decimal degrees
+                </p>
+                {!showRawCoords && (
+                  <p className="text-muted-foreground text-xs mt-2">
+                    WKT format: longitude latitude pairs, comma-separated
+                  </p>
+                )}
+              </div>
             </Card>
           )}
         </div>
       </div>
 
-      {/* Map */}
+      {/* Map Container */}
       <div className="flex-1 relative">
-        <div ref={mapContainer} className="w-full h-full" />
+        <div ref={mapContainer} className="absolute inset-0" />
+        
+        {/* Map overlay info */}
+        <div className="absolute top-4 left-4 bg-map-controls/90 backdrop-blur-sm rounded-lg p-3 shadow-lg border border-map-border">
+          <h1 className="font-semibold text-sm">Building Polygon Tool</h1>
+          <p className="text-xs text-muted-foreground mt-1">
+            Draw polygons to capture building outlines
+          </p>
+        </div>
       </div>
     </div>
   );

@@ -3,25 +3,25 @@ import Map from '@/components/Map';
 import TokenInput from '@/components/TokenInput';
 
 const Index = () => {
-  const [apiKey, setApiKey] = useState<string>('');
+  const [mapboxToken, setMapboxToken] = useState<string>('');
 
   useEffect(() => {
-    // Check for saved API key in localStorage
-    const savedKey = localStorage.getItem('google-maps-api-key');
-    if (savedKey) {
-      setApiKey(savedKey);
+    // Check for saved token in localStorage
+    const savedToken = localStorage.getItem('mapbox-token');
+    if (savedToken) {
+      setMapboxToken(savedToken);
     }
   }, []);
 
   const handleTokenSubmit = (token: string) => {
-    setApiKey(token);
+    setMapboxToken(token);
   };
 
-  if (!apiKey) {
+  if (!mapboxToken) {
     return <TokenInput onTokenSubmit={handleTokenSubmit} />;
   }
 
-  return <Map mapboxToken={apiKey} />;
+  return <Map mapboxToken={mapboxToken} />;
 };
 
 export default Index;
