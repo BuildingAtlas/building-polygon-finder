@@ -82,6 +82,32 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
     return `POLYGON ((${coordString}))`;
   };
 
+  // Calculate polygon area in square meters using the Shoelace formula with lat/lng
+  const calculatePolygonArea = (coords: number[][]): number => {
+    if (coords.length < 3) return 0;
+
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const R = 6371000; // Earth radius in meters
+
+    // Close the ring if not already closed
+    const ring = [...coords];
+    if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
+      ring.push(ring[0]);
+    }
+
+    // Spherical excess method for small polygons
+    let area = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const lng1 = toRad(ring[i][0]);
+      const lat1 = toRad(ring[i][1]);
+      const lng2 = toRad(ring[i + 1][0]);
+      const lat2 = toRad(ring[i + 1][1]);
+      area += (lng2 - lng1) * (2 + Math.sin(lat1) + Math.sin(lat2));
+    }
+
+    return Math.abs((area * R * R) / 2);
+  };
+
   // Update WKT when coordinates change
   useEffect(() => {
     if (coordinates.length > 0) {
@@ -441,6 +467,29 @@ const Map: React.FC<MapProps> = ({ mapboxToken }) => {
               </p>
             )}
           </Card>
+
+          {/* Polygon Area */}
+          {coordinates.length > 2 && (
+            <Card className="p-4">
+              <h3 className="font-semibold mb-2">Polygon Area</h3>
+              <div className="text-sm space-y-1">
+                <p>
+                  <span className="font-medium">Area:</span>{' '}
+                  {(() => {
+                    const area = calculatePolygonArea(coordinates);
+                    if (area >= 1_000_000) {
+                      return `${(area / 1_000_000).toFixed(3)} km²`;
+                    }
+                    return `${area.toFixed(1)} m²`;
+                  })()}
+                </p>
+                <p>
+                  <span className="font-medium">Area:</span>{' '}
+                  {(calculatePolygonArea(coordinates) * 10.7639).toFixed(1)} ft²
+                </p>
+              </div>
+            </Card>
+          )}
 
           {/* Coordinate Info */}
           {coordinates.length > 0 && (
