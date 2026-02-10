@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Map from '@/components/Map';
 import TokenInput from '@/components/TokenInput';
-import BuildingFiltersPanel from '@/components/BuildingFiltersPanel';
+
 
 const Index = () => {
   const [mapboxToken, setMapboxToken] = useState<string>('');
@@ -23,13 +23,8 @@ const Index = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen">
-      <div className="flex-shrink-0 max-h-[60vh] overflow-y-auto">
-        <BuildingFiltersPanel />
-      </div>
-      <div className="flex-1 min-h-0">
-        <Map mapboxToken={mapboxToken} />
-      </div>
+    <div className="h-screen">
+      <Map mapboxToken={mapboxToken} />
     </div>
   );
 };
